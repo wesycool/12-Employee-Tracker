@@ -18,7 +18,10 @@
   },
   "homepage": "https://github.com/wesycool/12-Employee-Tracker#readme",
   "dependencies": {
+    "console.table": "^0.10.0",
+    "dotenv": "^8.2.0",
     "inquirer": "^7.2.0",
-    "mysql": "^2.18.1"
+    "mysql": "^2.18.1",
+    "open": "^7.0.4"
   }
 }
