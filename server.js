@@ -49,98 +49,120 @@ async function mainApp(){
     do {
         console.clear()
         console.log(fs.readFileSync('welcome.md','utf8'))
-        
-        const searchData = await searchPrompt()
-        prev = false
 
-        if(searchData){
-            const changeData = await inquirer.prompt({
-                message:'What would you want to do?', 
-                type: 'list', 
-                name:'action', 
-                choices: ['Add','Update','Delete','RETURN'].map(choice => {
-                    name = (choice == 'RETURN')? choice : `${choice} ${searchData.search.result}`
-                    value = (choice == 'RETURN')? 'true' : `${choice.toLowerCase()}Prompt(searchData)`
-                    disabled = (searchData.tableList != '')? false
-                             : (['Add','RETURN'].includes(choice))? false : true
+        const search = await searchPrompt()
 
-                    return {name,value,disabled}
+        if(!search) prev = search
+        else {
+            do{
+                // Action Function
+                const tableList = await db.query( 'SELECT * FROM ??', [search])
+                console.table( tableList )
+
+                const {action} = await inquirer.prompt({
+                    message:'What would you want to do?', 
+                    type: 'list', 
+                    name:'action', 
+                    choices: ['Add','Update','Delete','RETURN'].map(choice => {
+                        name = (choice == 'RETURN')? choice : `${choice} ${search}`
+                        value = (choice == 'RETURN')? 'true' : `${choice.toLowerCase()}Prompt(search, tableList)`
+                        disabled = (tableList != '')? false
+                            : (['Add','RETURN'].includes(choice))? false 
+                            : true
+    
+                        return {name,value,disabled}
+                    })
                 })
-            })
-            prev = await eval(changeData.action)
+                prev = await eval(action)
+            }while(!prev)
         }
 
     } while(prev)
 
+    console.clear()
     await db.close()
 }
 
 
 // Initial Search Prompt Function
 async function searchPrompt(){
-    const search = await inquirer.prompt({
+    const {search} = await inquirer.prompt({
         message:'Viewing:', 
         type: 'list', 
-        name:'result', 
+        name:'search', 
         choices:['Department', 'Role', 'Employee', 'EXIT']
     })
 
-    if (search.result == 'EXIT') return
-    
-    const tableList = await db.query( 'SELECT * FROM ??', [search.result])
-    console.table( tableList )
-    return {search, tableList}
+    if (search == 'EXIT') return
+    return search
 }
 
 
 // Delete Prompt Function
-async function deletePrompt(data){
-    const objKeys = await getColumns(data)
+async function deletePrompt(search, tableList){
+    const columns = await getColumns(search)
 
-    const choices = data.tableList.map(table => {
-        return `${table[objKeys[0]]}. ${table[objKeys[1]]} ${objKeys[2] == 'last_name' ? table[objKeys[2]] : ''}`
+
+    let choices = tableList.map(table => {
+        return `${table[columns[0]]}. ${table[columns[1]]} ${columns[2] == 'last_name' ? table[columns[2]] : ''}`
     })
-    choices.push('CANCEL')
+    choices = [...choices, 'CANCEL']
 
-    const choiceDelete = await inquirer.prompt({
-        message:`Which ${data.search.result.toLowerCase()} to delete:`, 
+    const {deleteData} = await inquirer.prompt({
+        message:`Which ${search.toLowerCase()} to delete:`, 
         type: 'list', 
-        name:'delete', 
+        name:'deleteData', 
         choices
     })
 
-    if(choiceDelete.delete == 'CANCEL') return true
+    if(deleteData == 'CANCEL') return false
 
-    console.log(choiceDelete.delete.split('.')[0])
-    await db.query( 'DELETE FROM ?? WHERE id=?', [data.search.result,choiceDelete.delete.split('.')[0]])
-    return true
+    await db.query( 'DELETE FROM ?? WHERE id=?', [ search , deleteData.split('.')[0] ])
+    return false
 }
 
 
 // Update Prompt Function
-async function updatePrompt(data){
-    const objKeys = await getColumns(data)
+async function updatePrompt(search, tableList){
+    const columns = await getColumns(search)
 
-    const choices = data.tableList.map( function(table){
-        return `${table[objKeys[0]]}. ${table[objKeys[1]]} ${objKeys[2] == 'last_name' ? table[objKeys[2]] : ''}`
+    let choices = tableList.map(table =>{
+        return `${table[columns[0]]}. ${table[columns[1]]} ${columns[2] == 'last_name' ? table[columns[2]] : ''}`
     })
+    choices = [...choices, 'CANCEL']
 
-    const choiceDelete = await inquirer.prompt({
-        message:`Which ${data.search.result.toLowerCase()} to update:`,
+    const {updateData} = await inquirer.prompt({
+        message:`Which ${search.toLowerCase()} to update:`,
         type: 'list',
-        name:'delete',
+        name:'updateData',
         choices
     })
+    
+    if(updateData == 'CANCEL') return false
+
+    let repeat = false
+    do{
+        const {changeField,changeValue,changeMore} = await inquirer.prompt([
+            { message: 'What would you like to edit?', type:'list', name: 'changeField', choices: columns.filter( col => col != 'id') },
+            { message: edit => `Input new ${edit.changeField} value`, type: 'input', name: 'changeValue'},
+            { message: 'Edit more?', type: 'confirm', name: 'changeMore'}
+        ])
+
+        await db.query( `UPDATE ?? SET ${changeField} = ? WHERE id=?`, [ search, changeValue, updateData.split('.')[0]])
+        repeat = changeMore
+
+    } while (repeat)
+
+    return false
 
 }
 
 
 // Add Prompt Function
-async function addPrompt(data){
-    const objKeys = await getColumns(data)
+async function addPrompt(search, tableList){
     let newValues = {}
 
-    for( const col of objKeys){
+    for( const col of await getColumns(search)){
         if(col == 'id') newValues.id = null
         else{
             const input = await inquirer.prompt({
@@ -148,19 +170,23 @@ async function addPrompt(data){
                 type:'input',
                 name: col
             })
-            newValues = Object.assign(newValues, input)
+            newValues = {...newValues, ...input}
         }
     }
 
-    await db.query( 'INSERT INTO ?? VALUES(?)', [data.search.result,Object.values(newValues)])
-    return true
+    await db.query( 'INSERT INTO ?? VALUES(?)', [ search , Object.values(newValues) ])
+    return false
 }
 
 
 // Get Column Names from SQL Table
-async function getColumns(data){
-    const table = data.search.result
-    const columns = await db.query( `SELECT column_name FROM information_schema.columns WHERE table_name = N'${table}' ORDER BY ordinal_position`)
+async function getColumns(search){
+    const columns = await db.query(`
+        SELECT column_name 
+        FROM information_schema.columns 
+        WHERE table_name = N'${search}' 
+        ORDER BY ordinal_position`)
+        
     return columns.map(table => table.COLUMN_NAME)
 }
 
